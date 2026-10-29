@@ -8,6 +8,8 @@ uhara10 is by ru-mii. The upstream README says they have stopped working on the
 project and are prioritizing other things, and that the repository remains open
 for forks. Thank you for making uhara available; best wishes to them.
 
+Compiled build: [`bin/uhara10-PBZ`](bin/uhara10-PBZ).
+
 ## Changes
 
 The Phantom Blade Zero changes are limited to:

@@ -13,17 +13,101 @@ using static TImports;
 
 internal class TMemory
 {
+    // The module image is read once per process token and module name, then
+    // reused by the scan helpers. Without it, each signature scan reads the
+    // module or all of its sections again.
+    private sealed class ModuleImageEntry
+    {
+        internal string Key;
+        internal byte[] Image;
+        internal ulong Base;
+        internal int Size;
+    }
+
+    private static readonly object ModuleImageLock = new object();
+    private static ModuleImageEntry ModuleImageCache;
+
+    private static string GetModuleImageKey(Process process, string moduleName)
+    {
+        try
+        {
+            string token = TProcess.GetToken(process);
+            if (string.IsNullOrEmpty(token)) return null;
+            return token + "|" + (moduleName ?? "<main>").ToUpperInvariant();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static byte[] GetModuleImage(Process process, string moduleName, out ulong moduleBase, out int moduleSize)
+    {
+        moduleBase = 0;
+        moduleSize = 0;
+        if (process == null) return null;
+
+        ProcessModule processModule = moduleName == null
+            ? process.MainModule
+            : TProcess.GetModule(process, moduleName);
+        if (processModule == null) return null;
+
+        moduleBase = (ulong)processModule.BaseAddress;
+        moduleSize = processModule.ModuleMemorySize;
+        if (moduleBase == 0 || moduleSize <= 0) return null;
+
+        string key = GetModuleImageKey(process, moduleName);
+        if (string.IsNullOrEmpty(key)) return null;
+
+        lock (ModuleImageLock)
+        {
+            if (ModuleImageCache != null && ModuleImageCache.Key == key)
+                return ModuleImageCache.Image;
+
+            // A different process token or module name: the old bytes are no longer
+            // trustworthy. Drop the entry before reading the new one.
+            ModuleImageCache = null;
+        }
+
+        byte[] image = ReadMemoryBytes(process, moduleBase, moduleSize);
+        if (image == null || image.Length != moduleSize) return null;
+
+        lock (ModuleImageLock)
+        {
+            ModuleImageCache = new ModuleImageEntry
+            {
+                Key = key,
+                Image = image,
+                Base = moduleBase,
+                Size = moduleSize,
+            };
+        }
+
+        return image;
+    }
+
+    private static byte[] GetSectionFromImage(byte[] image, ulong moduleBase, ulong sectionAddress, int length)
+    {
+        if (image == null || sectionAddress < moduleBase) return null;
+
+        long offset = (long)sectionAddress - (long)moduleBase;
+        if (offset < 0 || offset >= image.Length) return null;
+
+        int available = image.Length - (int)offset;
+        int count = Math.Min(length, available);
+        if (count <= 0) return null;
+
+        byte[] section = new byte[count];
+        Buffer.BlockCopy(image, (int)offset, section, 0, count);
+        return section;
+    }
+
     internal static IntPtr ScanSimple(Process process, string signature, string moduleName = null)
     {
         do
         {
-            ProcessModule processModule = moduleName == null ? process.MainModule : TProcess.GetModule(process, moduleName);
-            if (processModule == null) break;
-
-            ulong modStart = (ulong)processModule.BaseAddress;
-            int modSize = processModule.ModuleMemorySize;
-
-            byte[] modBytes = ReadMemoryBytes(process, modStart, modSize);
+            ulong modStart;
+            byte[] modBytes = GetModuleImage(process, moduleName, out modStart, out _);
             if (modBytes == null || modBytes.Length == 0) break;
 
             int offset = FindInArray(modBytes, signature);
@@ -68,10 +152,14 @@ internal class TMemory
         string searchMask = TSignature.GetMask(signature);
 
         List<ulong[]> sections = GetAllSections(process, moduleName);
+        ulong moduleBase;
+        byte[] moduleImage = GetModuleImage(process, moduleName, out moduleBase, out _);
 
         for (int i = 0; i < sections.Count; i++)
         {
-            byte[] sectionBytes = ReadMemoryBytes(process, sections[i][0], (int)sections[i][1]);
+            byte[] sectionBytes = moduleImage != null
+                ? GetSectionFromImage(moduleImage, moduleBase, sections[i][0], (int)sections[i][1])
+                : ReadMemoryBytes(process, sections[i][0], (int)sections[i][1]);
             if (sectionBytes != null && sectionBytes.Length > 0)
             {
                 int searchOffset = 0;
@@ -345,13 +433,8 @@ internal class TMemory
         ulong searchAddress = 0;
 
         List<ulong[]> sections = GetAllSections(process, moduleName);
-        List<byte[]> sectionsBytes = new List<byte[]>();
-
-        foreach (ulong[] rSection in sections)
-        {
-            byte[] readBytes = ReadMemoryBytes(process, rSection[0], (int)rSection[1]);
-            sectionsBytes.Add(readBytes);
-        }
+        ulong moduleBase;
+        byte[] moduleImage = GetModuleImage(process, moduleName, out moduleBase, out _);
 
         List<KeyValuePair<string, int>> checkpoints = new List<KeyValuePair<string, int>>(scanData.Checkpoints);
         checkpoints.Insert(0, new KeyValuePair<string, int>(scanData.Signature, 0));
@@ -364,7 +447,10 @@ internal class TMemory
 
         for (int i = 0; i < sections.Count; i++)
         {
-            if (sectionsBytes[i] == null) continue;
+            byte[] sectionBytes = moduleImage != null
+                ? GetSectionFromImage(moduleImage, moduleBase, sections[i][0], (int)sections[i][1])
+                : ReadMemoryBytes(process, sections[i][0], (int)sections[i][1]);
+            if (sectionBytes == null) continue;
             int searchOffset = 0;
 
             int offsetSuccess = 0;
@@ -395,7 +481,7 @@ internal class TMemory
                         }
                     }
 
-                    int searchOffset2 = FindInArray(sectionsBytes[i], searchBytes, searchMask, searchOffset, maxDistance);
+                    int searchOffset2 = FindInArray(sectionBytes, searchBytes, searchMask, searchOffset, maxDistance);
                     chainSuccess = searchOffset2 != -1;
 
                     if (chainSuccess)
@@ -468,10 +554,14 @@ internal class TMemory
         string searchMask = TSignature.GetMask(signature);
 
         List<ulong[]> sections = GetAllSections(process, moduleName);
+        ulong moduleBase;
+        byte[] moduleImage = GetModuleImage(process, moduleName, out moduleBase, out _);
 
         for (int i = 0; i < sections.Count; i++)
         {
-            byte[] sectionBytes = ReadMemoryBytes(process, sections[i][0], (int)sections[i][1]);
+            byte[] sectionBytes = moduleImage != null
+                ? GetSectionFromImage(moduleImage, moduleBase, sections[i][0], (int)sections[i][1])
+                : ReadMemoryBytes(process, sections[i][0], (int)sections[i][1]);
             if (sectionBytes != null && sectionBytes.Length > 0)
             {
                 int searchOffset = 0;
@@ -501,10 +591,14 @@ internal class TMemory
         string searchMask = TSignature.GetMask(signature);
 
         List<ulong[]> sections = GetAllSections(process);
+        ulong moduleBase;
+        byte[] moduleImage = GetModuleImage(Main.ProcessInstance, null, out moduleBase, out _);
 
         foreach (ulong[] section in sections)
         {
-            byte[] sectionBytes = ReadMemoryBytes(Main.ProcessInstance, section[0], (int)section[1]);
+            byte[] sectionBytes = moduleImage != null
+                ? GetSectionFromImage(moduleImage, moduleBase, section[0], (int)section[1])
+                : ReadMemoryBytes(Main.ProcessInstance, section[0], (int)section[1]);
             if (sectionBytes != null && sectionBytes.Length > 0)
             {
                 int searchOffset = FindInArray(sectionBytes, searchBytes, searchMask);
@@ -715,9 +809,30 @@ internal class TMemory
 
     internal static byte[] ReadMemoryBytes(Process process, IntPtr address, int size)
     {
+        if (process == null || address == IntPtr.Zero || size <= 0) return null;
+
         byte[] data = new byte[size];
-        if (TImports.ReadProcessMemory(process.Handle, address, data, data.Length, out _))
+        if (TImports.ReadProcessMemory(process.Handle, address, data, data.Length, out IntPtr bytesRead) &&
+            bytesRead.ToInt64() == size)
             return data;
-        return null;
+
+        // Large reads can fail or come back short; retry in 1 MB chunks into
+        // the same buffer.
+        const int chunkSize = 0x100000;
+        int offset = 0;
+        while (offset < size)
+        {
+            int count = Math.Min(chunkSize, size - offset);
+            byte[] chunk = new byte[count];
+            IntPtr current = (IntPtr)((ulong)address + (ulong)offset);
+            if (!TImports.ReadProcessMemory(process.Handle, current, chunk, count, out bytesRead) ||
+                bytesRead.ToInt64() != count)
+                return null;
+
+            Buffer.BlockCopy(chunk, 0, data, offset, count);
+            offset += count;
+        }
+
+        return data;
     }
 }

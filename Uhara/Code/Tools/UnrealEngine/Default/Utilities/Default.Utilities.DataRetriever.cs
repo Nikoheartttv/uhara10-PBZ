@@ -30,6 +30,10 @@ public partial class Tools
 							{
 								address = TConvert.Parse<ulong>(ProcessCache.Get(dataNameLower));
 
+                                // Phantom Blade Zero: resolve GEngine from the global
+                                // used by this initialization sequence. Tried before
+                                // the generic candidates.
+                                if (address == 0) address = TMemory.ScanRel(Main.ProcessInstance, 3, "48 8B 05 ?? ?? ?? ?? C7 44 24 ?? ?? ?? ?? ?? 48 8B 88");
                                 if (address == 0) address = TMemory.ScanRel(Main.ProcessInstance, 8, "E8 ???????? 48 8B 0D ???????? 49 8B ?? 48 8B 01 FF 90 ???????? 48 8?");
                                 if (address == 0) address = TMemory.ScanRel(Main.ProcessInstance, 3, "48 89 05 ???????? 48 85 C9 74 ?? E8 ???????? 48 8D 4D");
 								if (address == 0) address = TMemory.ScanRel(Main.ProcessInstance, 3, "48 8B 0D ???????? 48 85 C9 74 ?? E8");

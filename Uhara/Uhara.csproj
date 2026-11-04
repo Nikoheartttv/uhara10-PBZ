@@ -144,10 +144,11 @@
     <Compile Include="Code\Interface\Main\Main.Settings.cs" />
     <None Include="app.config" />
     <None Include="packages.config" />
+    <None Include="post_build.bat" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
     <Nullable>disable</Nullable>
-    <PostBuildEvent>call "$(TargetDir)post_build.bat"</PostBuildEvent>
+    <PostBuildEvent>call "$(MSBuildProjectDirectory)\post_build.bat" "$(TargetPath)" "$(TargetDir)" "$(MSBuildProjectDirectory)\Code\Interface\Main\Main.cs"</PostBuildEvent>
   </PropertyGroup>
 </Project>

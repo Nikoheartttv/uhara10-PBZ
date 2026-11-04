@@ -22,7 +22,7 @@ public partial class Tools
 					bool Loaded = false;
 					ulong FNamePool = 0;
 
-                    internal string FNameToStringLegacy(object fName)
+                    internal string FNameToStringLegacy(ulong fName)
                     {
                         try
                         {
@@ -30,7 +30,9 @@ public partial class Tools
                             {
                                 if (!Loaded) break;
 
-                                uint fNameNum = Convert.ToUInt32(fName);
+                                // The legacy layout is 32-bit. Accept a full FName
+                                // but keep using the low half for this format.
+                                uint fNameNum = (uint)fName;
 
 								uint AEWJCWUH = fNameNum;
                                 uint JNJXDZWC = fNameNum;
@@ -60,7 +62,7 @@ public partial class Tools
                         return null;
                     }
 
-                    internal string FNameToShortStringLegacy(object fName)
+                    internal string FNameToShortStringLegacy(ulong fName)
                     {
                         try
                         {
@@ -82,7 +84,7 @@ public partial class Tools
                         return null;
                     }
 
-                    internal string FNameToShortStringLegacy2(object fName)
+                    internal string FNameToShortStringLegacy2(ulong fName)
                     {
                         try
                         {
@@ -102,7 +104,7 @@ public partial class Tools
                         return null;
                     }
 
-                    internal string FNameToString(object fName)
+                    internal string FNameToString(ulong fName)
 					{
 						try
 						{
@@ -110,7 +112,7 @@ public partial class Tools
 							{
                                 if (!Loaded) break;
 
-                                uint fNameNum = Convert.ToUInt32(fName);
+                                ulong fNameNum = fName;
 
                                 var nameIdx = (fNameNum & 0x000000000000FFFF) >> 0x00;
 								var chunkIdx = (fNameNum & 0x00000000FFFF0000) >> 0x10;
@@ -139,7 +141,7 @@ public partial class Tools
 						return null;
 					}
 
-					internal string FNameToShortString(object fName)
+					internal string FNameToShortString(ulong fName)
 					{
 						try
 						{
@@ -161,7 +163,7 @@ public partial class Tools
 						return null;
 					}
 
-					internal string FNameToShortString2(object fName)
+					internal string FNameToShortString2(ulong fName)
 					{
 						try
 						{

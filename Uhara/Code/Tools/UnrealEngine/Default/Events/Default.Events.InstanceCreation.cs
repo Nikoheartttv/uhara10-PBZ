@@ -32,6 +32,31 @@ public partial class Tools
                     }
                     InitResults InitResult = InitResults.None;
 
+                    private static string FormatAddress(ulong address)
+                    {
+                        if (address == 0) return "0x0";
+
+                        try
+                        {
+                            ulong baseAddress = (ulong)Main.ProcessInstance.MainModule.BaseAddress;
+                            if (baseAddress != 0 && address >= baseAddress)
+                                return "0x" + address.ToString("X") +
+                                    " (rva 0x" + (address - baseAddress).ToString("X") + ")";
+                        }
+                        catch { }
+
+                        return "0x" + address.ToString("X");
+                    }
+
+                    private static void PrintLookup(string name, ulong cached, ulong scanned, ulong final)
+                    {
+                        TUtils.Print("Events." + typeof(InstanceCreation).Name + ".ScanData | " + name +
+                            " | cache=" + FormatAddress(cached) +
+                            " scan=" + FormatAddress(scanned) +
+                            " -> " + FormatAddress(final) +
+                            " [" + (cached != 0 ? "cache" : "scan") + "]");
+                    }
+
                     private struct GeneratedOffsets
                     {
                         public const ulong ND_FNamePoolAddress = 0x5000;
@@ -254,8 +279,13 @@ public partial class Tools
                             }
                             while (false);
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            TUtils.Print("Events." + GetType().Name + ".Initiate | EXCEPTION: " + ex.ToString());
+                        }
                         InitResult = InitResults.Failed;
+                        TUtils.Print("Events." + GetType().Name +
+                            ".Initiate | FAILED; this tool instance will not retry");
                         return false;
                     }
                     #endregion
@@ -296,56 +326,94 @@ public partial class Tools
                             do
                             {
                                 {
-                                    //if (ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal == 0)
+                                    ulong cachedStaticConstructObject = TConvert.Parse<ulong>(
+                                        Main.GetProcessCache(SubToolID, "F_StaticConstructObject_Internal"));
+                                    ulong scannedStaticConstructObject = 0;
+
+                                    ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal =
+                                        cachedStaticConstructObject;
+                                    if (ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal == 0)
+                                    {
                                         ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal =
-                                        TConvert.Parse<ulong>(Main.GetProcessCache(SubToolID, "F_StaticConstructObject_Internal"));
+                                            ScanUtility.UnrealEngine.SearchAddress(
+                                                ScanUtility.UnrealEngine.Function.StaticConstructObject_Internal);
+                                        scannedStaticConstructObject =
+                                            ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal;
+                                    }
+
+                                    PrintLookup("F_StaticConstructObject_Internal", cachedStaticConstructObject,
+                                        scannedStaticConstructObject,
+                                        ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal);
 
                                     if (ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal == 0)
-                                        ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal =
-                                    ScanUtility.UnrealEngine.SearchAddress(
-                                    ScanUtility.UnrealEngine.Function.StaticConstructObject_Internal);
-
-                                    if (ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal == 0)
+                                    {
+                                        TUtils.Print("Events." + GetType().Name + "." + MethodBase.GetCurrentMethod().Name +
+                                            " | FAILED: F_StaticConstructObject_Internal resolved to zero");
                                         break;
+                                    }
 
                                     Main.SetProcessCache(SubToolID, "F_StaticConstructObject_Internal", "0x" +
                                         ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal.ToString("X"));
                                 }
 
                                 {
-                                    //if (ToolsShared.ToolData.UnrealEngine.F_UObjectBeginDestroy == 0)
-                                    ToolsShared.ToolData.UnrealEngine.F_UObjectBeginDestroy =
-                                        TConvert.Parse<ulong>(Main.GetProcessCache(SubToolID, "F_UObjectBeginDestroy"));
+                                    ulong cachedBeginDestroy = TConvert.Parse<ulong>(
+                                        Main.GetProcessCache(SubToolID, "F_UObjectBeginDestroy"));
+                                    if (cachedBeginDestroy == 0)
+                                        cachedBeginDestroy = TConvert.Parse<ulong>(
+                                            Main.GetProcessCache(
+                                                ToolsShared.ToolData.UnrealEngine.SharedCacheID,
+                                                "F_UObjectBeginDestroy"));
+                                    ulong scannedBeginDestroy = 0;
 
+                                    ToolsShared.ToolData.UnrealEngine.F_UObjectBeginDestroy = cachedBeginDestroy;
                                     if (ToolsShared.ToolData.UnrealEngine.F_UObjectBeginDestroy == 0)
+                                    {
                                         ToolsShared.ToolData.UnrealEngine.F_UObjectBeginDestroy =
-                                       ScanUtility.UnrealEngine.SearchAddress(
-                                       ScanUtility.UnrealEngine.Function.UObject_BeginDestroy);
+                                            ScanUtility.UnrealEngine.SearchAddress(
+                                                ScanUtility.UnrealEngine.Function.UObject_BeginDestroy);
+                                        scannedBeginDestroy = ToolsShared.ToolData.UnrealEngine.F_UObjectBeginDestroy;
+                                    }
+
+                                    PrintLookup("F_UObjectBeginDestroy", cachedBeginDestroy, scannedBeginDestroy,
+                                        ToolsShared.ToolData.UnrealEngine.F_UObjectBeginDestroy);
 
                                     if (ToolsShared.ToolData.UnrealEngine.F_UObjectBeginDestroy == 0)
                                     {
-                                        if (false) TUtils.Print("Events." + GetType().Name + "." + MethodBase.GetCurrentMethod().Name +
-                                            " | " + "Couldn't find BeginDeestroy: " + success.ToString()); break;
+                                        TUtils.Print("Events." + GetType().Name + "." + MethodBase.GetCurrentMethod().Name +
+                                            " | FAILED: F_UObjectBeginDestroy resolved to zero");
+                                        break;
                                     }
 
                                     Main.SetProcessCache(SubToolID, "F_UObjectBeginDestroy", "0x" +
                                         ToolsShared.ToolData.UnrealEngine.F_UObjectBeginDestroy.ToString("X"));
+                                    Main.SetProcessCache(ToolsShared.ToolData.UnrealEngine.SharedCacheID,
+                                        "F_UObjectBeginDestroy", "0x" +
+                                        ToolsShared.ToolData.UnrealEngine.F_UObjectBeginDestroy.ToString("X"));
                                 }
 
                                 {
-                                    //if (ToolsShared.ToolData.UnrealEngine.D_FNamePoolAddress == 0)
-                                    ToolsShared.ToolData.UnrealEngine.D_FNamePoolAddress =
-                                        TConvert.Parse<ulong>(Main.GetProcessCache(SubToolID, "D_FNamePoolAddress"));
+                                    ulong cachedFNamePool = TConvert.Parse<ulong>(
+                                        Main.GetProcessCache(SubToolID, "D_FNamePoolAddress"));
+                                    ulong scannedFNamePool = 0;
 
+                                    ToolsShared.ToolData.UnrealEngine.D_FNamePoolAddress = cachedFNamePool;
                                     if (ToolsShared.ToolData.UnrealEngine.D_FNamePoolAddress == 0)
+                                    {
                                         ToolsShared.ToolData.UnrealEngine.D_FNamePoolAddress =
-                                        ScanUtility.UnrealEngine.SearchAddress(
-                                        ScanUtility.UnrealEngine.Data.FNamePool);
+                                            ScanUtility.UnrealEngine.SearchAddress(
+                                                ScanUtility.UnrealEngine.Data.FNamePool);
+                                        scannedFNamePool = ToolsShared.ToolData.UnrealEngine.D_FNamePoolAddress;
+                                    }
+
+                                    PrintLookup("D_FNamePoolAddress", cachedFNamePool, scannedFNamePool,
+                                        ToolsShared.ToolData.UnrealEngine.D_FNamePoolAddress);
 
                                     if (ToolsShared.ToolData.UnrealEngine.D_FNamePoolAddress == 0)
                                     {
-                                        if (false) TUtils.Print("Events." + GetType().Name + "." + MethodBase.GetCurrentMethod().Name +
-                                            " | " + "Couldn't find FNamePool: " + success.ToString()); break;
+                                        TUtils.Print("Events." + GetType().Name + "." + MethodBase.GetCurrentMethod().Name +
+                                            " | FAILED: D_FNamePoolAddress resolved to zero");
+                                        break;
                                     }
 
                                     Main.SetProcessCache(SubToolID, "D_FNamePoolAddress", "0x" +
@@ -356,7 +424,11 @@ public partial class Tools
                             }
                             while (false);
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            TUtils.Print("Events." + GetType().Name + "." + MethodBase.GetCurrentMethod().Name +
+                                " | EXCEPTION: " + ex.ToString());
+                        }
                         TUtils.Print("Events." + GetType().Name + "." + MethodBase.GetCurrentMethod().Name +
                             " | " + "Result: " + success.ToString()); return success;
                     }
@@ -401,6 +473,9 @@ public partial class Tools
                                     byte[] pageBytes = TMemory.ReadMemoryBytes(Main.ProcessInstance, ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal, 0x1000);
                                     ulong jumpNative = AddressAllocateStart + GeneratedOffsets.HK_StaticConstructObject_Internal;
 
+                                    TUtils.Print("Events." + GetType().Name + ".HookCode | ConstructObject | target=" +
+                                        FormatAddress(ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal));
+
                                     ulong hookAddress = 0;
                                     int minimumOverwrite = 0;
 
@@ -430,12 +505,16 @@ public partial class Tools
                                     if (communicationHeader == 0)
                                     {
                                         ulong retAddress = TMemory.GetFunctionReturn(Main.ProcessInstance, ToolsShared.ToolData.UnrealEngine.F_StaticConstructObject_Internal);
+                                        TUtils.Print("Events." + GetType().Name + ".HookCode | ConstructObject | retAddress=" +
+                                            FormatAddress(retAddress));
                                         if (retAddress == 0) break;
 
                                         minimumOverwrite = TMemory.GetMinimumOverwriteBackwards(Main.ProcessInstance, retAddress, 14);
                                         if (minimumOverwrite == 0) break;
 
                                         hookAddress = retAddress - (ulong)minimumOverwrite;
+                                        TUtils.Print("Events." + GetType().Name + ".HookCode | ConstructObject | minimumOverwrite=0x" +
+                                            minimumOverwrite.ToString("X") + " hook=" + FormatAddress(hookAddress));
 
                                         try
                                         {
@@ -511,6 +590,9 @@ public partial class Tools
                                     ulong hookAddress = ToolsShared.ToolData.UnrealEngine.F_UObjectBeginDestroy;
                                     ulong jumpNative = AddressAllocateStart + GeneratedOffsets.HK_UObjectBeginDestroy;
 
+                                    TUtils.Print("Events." + GetType().Name + ".HookCode | BeginDestroy | target=" +
+                                        FormatAddress(hookAddress));
+
                                     ulong communicationHeader = 0;
                                     try
                                     {
@@ -573,7 +655,11 @@ public partial class Tools
                             }
                             while (false);
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            TUtils.Print("Events." + GetType().Name + "." + MethodBase.GetCurrentMethod().Name +
+                                " | EXCEPTION: " + ex.ToString());
+                        }
                         TUtils.Print("Events." + GetType().Name + "." + MethodBase.GetCurrentMethod().Name +
                             " | " + "Result: " + success.ToString()); return success;
                     }

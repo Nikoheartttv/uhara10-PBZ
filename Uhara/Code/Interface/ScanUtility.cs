@@ -28,6 +28,20 @@ internal class ScanUtility
                 if (function == Function.StaticConstructObject_Internal)
                 {
                     ulong result = 0;
+
+                    // Phantom Blade Zero (CL-301524_JKS-17219, both the
+                    // 2026-10 and 2026-11 builds): the generic anchor below
+                    // exists only in .rsrc on this title, so that chain can
+                    // never reach the constructor. Anchor inside the function
+                    // instead - +0x51 is past UE4SS's 0x1C-byte entry detour -
+                    // and walk back to the int3 padding for the real entry.
+                    {
+                        ulong anchor = TMemory.ScanSingle(Main.ProcessInstance,
+                            "41 F7 87 24 01 00 00 80 00 00 10 74 6F");
+                        if (anchor != 0)
+                            result = TMemory.GetFunctionStartByPadding(Main.ProcessInstance, anchor);
+                    }
+
                     if (result == 0)
                     {
                         do
@@ -92,6 +106,13 @@ internal class ScanUtility
                 else if (function == Function.UObject_BeginDestroy)
                 {
                     ulong result = 0;
+
+                    // Phantom Blade Zero: unique continuation after the shared
+                    // "48 83 EC ??" prologue. One pass; the chain below is the
+                    // fallback for a build where this no longer matches.
+                    result = TMemory.ScanSingle(Main.ProcessInstance,
+                        "40 53 48 83 EC ?? 8B 41 08 48 8B D9 0F BA E0 0F 72 4C 48 8B 41 18 " +
+                        "48 8D 54 24 30 48 8D 4C 24 50");
 
                     if (result == 0)
                     {
@@ -275,6 +296,28 @@ internal class ScanUtility
                 else if (function == Function.UObjectProcessEvent)
                 {
                     ulong result = 0;
+
+                    // Phantom Blade Zero: the short prologue alone matches 40
+                    // functions in this build, so the tail is required to make
+                    // the first pass conclusive. The chain below remains the
+                    // fallback for a build where this no longer matches.
+                    result = TMemory.ScanSingle(Main.ProcessInstance,
+                        "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC ?? ?? 00 00 48 8D 6C 24 ?? " +
+                        "48 89 9D ?? ?? 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 ?? 00 00 00 " +
+                        "8B 41 08 4D 8B F0 48 8B FA 4C 8B F9 0F BA E0 1E");
+
+                    // Phantom Blade Zero 2026-11-04 update: the 5.7 recompile
+                    // dropped the early `bt eax, 1Eh`, so the 2026-10 pre-pass
+                    // above cannot match it. This anchors on the unique
+                    // FunctionFlags test (0x100, bit 0x200) instead and is
+                    // confirmed by UObject vtable slot 76. Both builds keep
+                    // the generic chains below as fallback.
+                    if (result == 0)
+                        result = TMemory.ScanSingle(Main.ProcessInstance,
+                            "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC ?? ?? 00 00 48 8D 6C 24 ?? " +
+                            "48 89 9D ?? ?? 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C5 48 89 85 ?? 00 00 00 " +
+                            "45 33 FF 49 8B F0 48 8B FA 4C 8B F1 48 85 D2 0F 84 ?? ?? 00 00 " +
+                            "F7 82 00 01 00 00 00 02 00 00");
 
                     if (result == 0)
                     {

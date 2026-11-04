@@ -14,6 +14,11 @@ internal class ToolsShared
             public static ulong F_UObjectBeginDestroy = 0;
             public static ulong F_UObjectProcessEvent = 0;
             public static ulong D_FNamePoolAddress = 0;
+
+            // FunctionCall and InstanceCreation both need BeginDestroy. Once
+            // one of them hooks it, the other can no longer scan the original
+            // prologue, so they share the resolved address through this cache.
+            public const string SharedCacheID = "uobjectbd";
         }
     }
 

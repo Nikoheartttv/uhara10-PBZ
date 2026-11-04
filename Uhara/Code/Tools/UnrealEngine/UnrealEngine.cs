@@ -12,7 +12,7 @@ public partial class Tools
     public partial class UnrealEngine
     {
         private bool Obsolete1Shown = false;
-        public string FNameToString(uint fName)
+        public string FNameToString(ulong fName)
         {
             try
             {
@@ -43,7 +43,8 @@ public partial class Tools
                     int length = TMemory.ReadMemory<short>(Main.ProcessInstance, entry) >> 6;
                     if (length > byte.MaxValue || length <= 0) break;
 
-                    return TUtils.MultibyteToString(TMemory.ReadMemoryBytes(Main.ProcessInstance, entry + sizeof(short), length));
+                    string name = TUtils.MultibyteToString(TMemory.ReadMemoryBytes(Main.ProcessInstance, entry + sizeof(short), length));
+                    return number == 0 ? name : name + "_" + number;
                 }
                 while (false);
             }

@@ -39,7 +39,7 @@ public partial class Tools
 					catch { }
 				}
 
-                public string FNameToStringLegacy(object fName)
+                public string FNameToStringLegacy(ulong fName)
                 {
                     try
                     {
@@ -49,7 +49,7 @@ public partial class Tools
                     return null;
                 }
 
-                public string FNameToShortStringLegacy(object fName)
+                public string FNameToShortStringLegacy(ulong fName)
                 {
                     try
                     {
@@ -59,7 +59,7 @@ public partial class Tools
                     return null;
                 }
 
-                public string FNameToShortStringLegacy2(object fName)
+                public string FNameToShortStringLegacy2(ulong fName)
                 {
                     try
                     {
@@ -69,7 +69,7 @@ public partial class Tools
                     return null;
                 }
 
-                public string FNameToString(object fName)
+                public string FNameToString(ulong fName)
 				{
 					try
 					{
@@ -79,7 +79,7 @@ public partial class Tools
 					return null;
 				}
 
-                public string FNameToShortString(object fName)
+                public string FNameToShortString(ulong fName)
                 {
                     try
                     {
@@ -89,7 +89,7 @@ public partial class Tools
                     return null;
                 }
 
-                public string FNameToShortString2(object fName)
+                public string FNameToShortString2(ulong fName)
                 {
                     try
                     {

@@ -13,26 +13,26 @@ using static TImports;
 
 internal class TMemory
 {
+    private sealed class SectionSnapshot
+    {
+        internal ulong Address;
+        internal byte[] Bytes;
+    }
+
+    private sealed class SectionCacheEntry
+    {
+        internal long Bytes;
+        internal List<SectionSnapshot> Sections;
+    }
+
+    private static readonly object SectionCacheLock = new object();
+    private static readonly Dictionary<string, SectionCacheEntry> SectionCache = new Dictionary<string, SectionCacheEntry>();
+    private const int MaxCachedModules = 4;
+    private const long MaxCachedSectionBytes = 1024L * 1024L * 1024L;
+
     internal static IntPtr ScanSimple(Process process, string signature, string moduleName = null)
     {
-        do
-        {
-            ProcessModule processModule = moduleName == null ? process.MainModule : TProcess.GetModule(process, moduleName);
-            if (processModule == null) break;
-
-            ulong modStart = (ulong)processModule.BaseAddress;
-            int modSize = processModule.ModuleMemorySize;
-
-            byte[] modBytes = ReadMemoryBytes(process, modStart, modSize);
-            if (modBytes == null || modBytes.Length == 0) break;
-
-            int offset = FindInArray(modBytes, signature);
-            if (offset == -1) break;
-
-            return (IntPtr)(modStart + (ulong)offset);
-        }
-        while (false);
-        return IntPtr.Zero;
+        return (IntPtr)ScanSingle(process, signature, moduleName);
     }
 
     internal static ulong DerefPointer(Process process, ulong address, params int[] offsets)
@@ -67,28 +67,25 @@ internal class TMemory
         byte[] searchBytes = TSignature.GetBytes(signature);
         string searchMask = TSignature.GetMask(signature);
 
-        List<ulong[]> sections = GetAllSections(process, moduleName);
+        List<SectionSnapshot> sections = GetSectionSnapshots(process, moduleName);
 
         for (int i = 0; i < sections.Count; i++)
         {
-            byte[] sectionBytes = ReadMemoryBytes(process, sections[i][0], (int)sections[i][1]);
-            if (sectionBytes != null && sectionBytes.Length > 0)
+            SectionSnapshot section = sections[i];
+            int searchOffset = 0;
+            while (searchOffset < section.Bytes.Length)
             {
-                int searchOffset = 0;
-                while (true)
-                {
-                    searchOffset = FindInArray(sectionBytes, searchBytes, searchMask, searchOffset);
-                    if (searchOffset == -1) break;
+                searchOffset = FindInArray(section.Bytes, searchBytes, searchMask, searchOffset);
+                if (searchOffset == -1) break;
 
-                    ulong foundAddress = sections[i][0] + (ulong)searchOffset;
+                ulong foundAddress = section.Address + (ulong)searchOffset;
 
-                    if (memoryProtection == -1) resultsRaw.Add(foundAddress);
-                    else if (GetMemoryProtection(process, foundAddress) == memoryProtection)
-                        resultsRaw.Add(foundAddress);
+                if (memoryProtection == -1) resultsRaw.Add(foundAddress);
+                else if (GetMemoryProtection(process, foundAddress) == memoryProtection)
+                    resultsRaw.Add(foundAddress);
 
-                    searchOffset += searchBytes.Length;
-                    if ((ulong)searchOffset >= sections[i][1]) break;
-                }
+                searchOffset += searchBytes.Length;
+                if (searchOffset >= section.Bytes.Length) break;
             }
         }
 
@@ -126,6 +123,41 @@ internal class TMemory
             {
                 return offset;
             }
+        }
+
+        return 0;
+    }
+
+    internal static ulong GetFunctionStartByPadding(Process process, ulong address, int maxBack = 0x200, int minPadding = 4)
+    {
+        if (process == null || address == 0) return 0;
+
+        int back = maxBack;
+        if ((ulong)back > address) back = (int)address;
+        if (back <= minPadding) return 0;
+
+        ulong windowStart = address - (ulong)back;
+        byte[] bytes = ReadMemoryBytes(process, windowStart, back);
+        if (bytes == null || bytes.Length != back) return 0;
+
+        // Walk back over code until the nearest run of int3 padding that is at
+        // least minPadding bytes long; the function starts right after it.
+        int index = bytes.Length - 1;
+        while (index >= 0)
+        {
+            while (index >= 0 && bytes[index] != 0xCC) index--;
+            if (index < 0) return 0;
+
+            int paddingEnd = index;
+            int padding = 0;
+            while (index >= 0 && bytes[index] == 0xCC)
+            {
+                padding++;
+                index--;
+            }
+
+            if (padding >= minPadding)
+                return windowStart + (ulong)(paddingEnd + 1);
         }
 
         return 0;
@@ -344,14 +376,7 @@ internal class TMemory
     {
         ulong searchAddress = 0;
 
-        List<ulong[]> sections = GetAllSections(process, moduleName);
-        List<byte[]> sectionsBytes = new List<byte[]>();
-
-        foreach (ulong[] rSection in sections)
-        {
-            byte[] readBytes = ReadMemoryBytes(process, rSection[0], (int)rSection[1]);
-            sectionsBytes.Add(readBytes);
-        }
+        List<SectionSnapshot> sections = GetSectionSnapshots(process, moduleName);
 
         List<KeyValuePair<string, int>> checkpoints = new List<KeyValuePair<string, int>>(scanData.Checkpoints);
         checkpoints.Insert(0, new KeyValuePair<string, int>(scanData.Signature, 0));
@@ -364,7 +389,8 @@ internal class TMemory
 
         for (int i = 0; i < sections.Count; i++)
         {
-            if (sectionsBytes[i] == null) continue;
+            SectionSnapshot section = sections[i];
+            if (section.Bytes == null || section.Bytes.Length == 0) continue;
             int searchOffset = 0;
 
             int offsetSuccess = 0;
@@ -395,7 +421,7 @@ internal class TMemory
                         }
                     }
 
-                    int searchOffset2 = FindInArray(sectionsBytes[i], searchBytes, searchMask, searchOffset, maxDistance);
+                    int searchOffset2 = FindInArray(section.Bytes, searchBytes, searchMask, searchOffset, maxDistance);
                     chainSuccess = searchOffset2 != -1;
 
                     if (chainSuccess)
@@ -413,14 +439,14 @@ internal class TMemory
                 else
                 {
                     searchOffset = baseOffset + baseByteSignature.Length;
-                    if (searchOffset + baseByteSignature.Length > (int)sections[i][1]) break;
+                    if (searchOffset + baseByteSignature.Length > section.Bytes.Length) break;
                     j = -1;
                 }
             }
 
             if (chainSuccess)
             {
-                searchAddress = sections[i][0] + (ulong)offsetSuccess;
+                searchAddress = section.Address + (ulong)offsetSuccess;
                 break;
             }
         }
@@ -467,28 +493,25 @@ internal class TMemory
         byte[] searchBytes = TSignature.GetBytes(signature);
         string searchMask = TSignature.GetMask(signature);
 
-        List<ulong[]> sections = GetAllSections(process, moduleName);
+        List<SectionSnapshot> sections = GetSectionSnapshots(process, moduleName);
 
         for (int i = 0; i < sections.Count; i++)
         {
-            byte[] sectionBytes = ReadMemoryBytes(process, sections[i][0], (int)sections[i][1]);
-            if (sectionBytes != null && sectionBytes.Length > 0)
+            SectionSnapshot section = sections[i];
+            int searchOffset = 0;
+            while (searchOffset < section.Bytes.Length)
             {
-                int searchOffset = 0;
-                while (true)
-                {
-                    searchOffset = FindInArray(sectionBytes, searchBytes, searchMask, searchOffset);
-                    if (searchOffset == -1) break;
+                searchOffset = FindInArray(section.Bytes, searchBytes, searchMask, searchOffset);
+                if (searchOffset == -1) break;
 
-                    ulong foundAddress = sections[i][0] + (ulong)searchOffset;
-                    if (memoryProtection == -1) return foundAddress;
-                    else if (GetMemoryProtection(process, foundAddress) == memoryProtection)
-                        return foundAddress;
+                ulong foundAddress = section.Address + (ulong)searchOffset;
+                if (memoryProtection == -1) return foundAddress;
+                else if (GetMemoryProtection(process, foundAddress) == memoryProtection)
+                    return foundAddress;
 
-                    searchOffset += 1;
-                    if ((ulong)searchOffset >= sections[i][1]) break;
-                    if ((ulong)(searchOffset + searchBytes.Length - 1) >= sections[i][1]) break;
-                }
+                searchOffset += 1;
+                if (searchOffset >= section.Bytes.Length) break;
+                if (searchOffset + searchBytes.Length - 1 >= section.Bytes.Length) break;
             }
         }
 
@@ -500,22 +523,18 @@ internal class TMemory
         byte[] searchBytes = TSignature.GetBytes(signature);
         string searchMask = TSignature.GetMask(signature);
 
-        List<ulong[]> sections = GetAllSections(process);
+        List<SectionSnapshot> sections = GetSectionSnapshots(process);
 
-        foreach (ulong[] section in sections)
+        foreach (SectionSnapshot section in sections)
         {
-            byte[] sectionBytes = ReadMemoryBytes(Main.ProcessInstance, section[0], (int)section[1]);
-            if (sectionBytes != null && sectionBytes.Length > 0)
+            int searchOffset = FindInArray(section.Bytes, searchBytes, searchMask);
+            if (searchOffset != -1)
             {
-                int searchOffset = FindInArray(sectionBytes, searchBytes, searchMask);
-                if (searchOffset != -1)
-                {
-                    ulong searchAddress = section[0] + (ulong)searchOffset;
-                    ulong relativeAddress = (ulong)((long)searchAddress + offset);
-                    long relativeValue = ReadMemory<int>(Main.ProcessInstance, relativeAddress);
-                    ulong destinationAddress = (ulong)((long)searchAddress + relativeValue + offset + 4);
-                    return destinationAddress;
-                }
+                ulong searchAddress = section.Address + (ulong)searchOffset;
+                ulong relativeAddress = (ulong)((long)searchAddress + offset);
+                int relativeValue = ReadMemory<int>(Main.ProcessInstance, relativeAddress);
+                ulong destinationAddress = (ulong)((long)searchAddress + relativeValue + offset + 4);
+                return destinationAddress;
             }
         }
 
@@ -541,6 +560,87 @@ internal class TMemory
         return searchAddress;
     }
 
+    internal static void ClearScanCache()
+    {
+        lock (SectionCacheLock) SectionCache.Clear();
+    }
+
+    private static List<SectionSnapshot> GetSectionSnapshots(Process process, string moduleName = null)
+    {
+        string key = GetScanCacheKey(process, moduleName);
+        if (key == null) return ReadSectionSnapshots(process, moduleName);
+
+        lock (SectionCacheLock)
+        {
+            SectionCacheEntry cached;
+            if (SectionCache.TryGetValue(key, out cached)) return cached.Sections;
+
+            List<SectionSnapshot> snapshots = ReadSectionSnapshots(process, moduleName);
+            if (snapshots.Count == 0) return snapshots;
+
+            long snapshotBytes = 0;
+            for (int i = 0; i < snapshots.Count; i++) snapshotBytes += snapshots[i].Bytes.Length;
+            if (snapshotBytes > MaxCachedSectionBytes) return snapshots;
+
+            long cachedBytes = 0;
+            foreach (SectionCacheEntry entry in SectionCache.Values) cachedBytes += entry.Bytes;
+            while (SectionCache.Count > 0 &&
+                   (SectionCache.Count >= MaxCachedModules || cachedBytes + snapshotBytes > MaxCachedSectionBytes))
+            {
+                string firstKey = null;
+                foreach (string existingKey in SectionCache.Keys)
+                {
+                    firstKey = existingKey;
+                    break;
+                }
+                if (firstKey == null) break;
+
+                cachedBytes -= SectionCache[firstKey].Bytes;
+                SectionCache.Remove(firstKey);
+            }
+
+            SectionCache[key] = new SectionCacheEntry { Bytes = snapshotBytes, Sections = snapshots };
+            return snapshots;
+        }
+    }
+
+    private static List<SectionSnapshot> ReadSectionSnapshots(Process process, string moduleName)
+    {
+        List<SectionSnapshot> snapshots = new List<SectionSnapshot>();
+        List<ulong[]> sections = GetAllSections(process, moduleName);
+
+        for (int i = 0; i < sections.Count; i++)
+        {
+            int size = (int)sections[i][1];
+            if (size <= 0) continue;
+
+            byte[] bytes = ReadMemoryBytes(process, sections[i][0], size);
+            if (bytes == null || bytes.Length == 0) continue;
+
+            snapshots.Add(new SectionSnapshot
+            {
+                Address = sections[i][0],
+                Bytes = bytes
+            });
+        }
+
+        return snapshots;
+    }
+
+    private static string GetScanCacheKey(Process process, string moduleName)
+    {
+        if (process == null) return null;
+
+        try
+        {
+            return TProcess.GetToken(process) + "|" + (moduleName ?? "<main>").ToUpperInvariant();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     public static List<ulong[]> GetAllSections(Process process, string moduleName = null)
     {
         List<ulong[]> sections = new List<ulong[]>();
@@ -550,19 +650,31 @@ internal class TMemory
 
         ulong baseAddress = (ulong)procModule.BaseAddress;
         byte[] peHeader = GetPEHeader(process, baseAddress);
+        if (peHeader == null) return sections;
 
         int peHeaderOffset = BitConverter.ToInt32(peHeader, 0x3C);
-        int sectionCount = BitConverter.ToInt16(peHeader, peHeaderOffset + 0x6);
-        int optionalHeaderSize = BitConverter.ToInt16(peHeader, peHeaderOffset + 0x14);
+        if (peHeaderOffset < 0 || peHeaderOffset + 0x18 > peHeader.Length) return sections;
+        int sectionCount = BitConverter.ToUInt16(peHeader, peHeaderOffset + 0x6);
+        int optionalHeaderSize = BitConverter.ToUInt16(peHeader, peHeaderOffset + 0x14);
         int sectionHeaderOffset = peHeaderOffset + 0x18 + optionalHeaderSize;
+        if (sectionHeaderOffset < 0 || sectionHeaderOffset + sectionCount * 0x28 > peHeader.Length) return sections;
+
+        long imageSize = procModule.ModuleMemorySize;
+        if (imageSize <= 0) return sections;
 
         for (int i = 0; i < sectionCount; i++)
         {
             int currentSectionOffset = sectionHeaderOffset + (i * 0x28);
             uint virtualSize = BitConverter.ToUInt32(peHeader, currentSectionOffset + 0x08);
+            uint rawSize = BitConverter.ToUInt32(peHeader, currentSectionOffset + 0x10);
             uint virtualAddress = BitConverter.ToUInt32(peHeader, currentSectionOffset + 0x0C);
 
-            sections.Add(new ulong[] { baseAddress + virtualAddress, virtualSize });
+            long sectionSize = virtualSize > 0 ? virtualSize : rawSize;
+            if (sectionSize <= 0 || virtualAddress >= imageSize) continue;
+            sectionSize = Math.Min(sectionSize, imageSize - virtualAddress);
+            if (sectionSize > int.MaxValue) continue;
+
+            sections.Add(new ulong[] { baseAddress + virtualAddress, (ulong)sectionSize });
         }
 
         if (sections.Count > 0) sections = sections.OrderBy(x => x[0]).ToList();
@@ -572,20 +684,21 @@ internal class TMemory
     internal static byte[] GetPEHeader(Process process, ulong baseAddress)
     {
         byte[] dosHeader = ReadMemoryBytes(process, baseAddress, 0x40);
-        if (dosHeader == null) return null;
+        if (dosHeader == null || dosHeader.Length < 0x40 || BitConverter.ToUInt16(dosHeader, 0) != 0x5A4D) return null;
 
         int peHeaderOffset = BitConverter.ToInt32(dosHeader, 0x3C);
+        if (peHeaderOffset < 0x40 || peHeaderOffset > 0x100000) return null;
 
         byte[] peHeaderInfo = ReadMemoryBytes(process, baseAddress + (ulong)peHeaderOffset, 0x18);
-        if (peHeaderInfo == null) return null;
+        if (peHeaderInfo == null || peHeaderInfo.Length < 0x18 || BitConverter.ToUInt32(peHeaderInfo, 0) != 0x00004550) return null;
 
-        int sectionCount = BitConverter.ToInt16(peHeaderInfo, 0x6);
-        int optionalHeaderSize = BitConverter.ToInt16(peHeaderInfo, 0x14);
+        int sectionCount = BitConverter.ToUInt16(peHeaderInfo, 0x6);
+        int optionalHeaderSize = BitConverter.ToUInt16(peHeaderInfo, 0x14);
+        if (sectionCount <= 0 || sectionCount > 96 || optionalHeaderSize < 0x60) return null;
 
-        int sectionHeaderOffset = peHeaderOffset + 0x18 + optionalHeaderSize;
-        int totalSize = sectionHeaderOffset + (sectionCount * 0x28);
-
-        return ReadMemoryBytes(process, baseAddress, totalSize);
+        long totalSize = (long)peHeaderOffset + 0x18 + optionalHeaderSize + sectionCount * 0x28L;
+        if (totalSize <= 0 || totalSize > 0x100000) return null;
+        return ReadMemoryBytes(process, baseAddress, (int)totalSize);
     }
 
     internal static int FindInArray(byte[] chunkData, string signature, int startPosition = 0, int maxDistance = 0)
@@ -715,9 +828,26 @@ internal class TMemory
 
     internal static byte[] ReadMemoryBytes(Process process, IntPtr address, int size)
     {
+        if (process == null || address == IntPtr.Zero || size <= 0) return null;
+
         byte[] data = new byte[size];
-        if (TImports.ReadProcessMemory(process.Handle, address, data, data.Length, out _))
+        if (ReadProcessMemory(process.Handle, address, data, data.Length, out IntPtr bytesRead) && bytesRead.ToInt64() == size)
             return data;
-        return null;
+
+        const int chunkSize = 0x100000;
+        int offset = 0;
+        while (offset < size)
+        {
+            int count = Math.Min(chunkSize, size - offset);
+            IntPtr currentAddress = (IntPtr)((ulong)address + (ulong)offset);
+            byte[] chunk = new byte[count];
+            if (!ReadProcessMemory(process.Handle, currentAddress, chunk, count, out bytesRead)) return null;
+            if (bytesRead.ToInt64() != count) return null;
+
+            Array.Copy(chunk, 0, data, offset, count);
+            offset += count;
+        }
+
+        return data;
     }
 }
